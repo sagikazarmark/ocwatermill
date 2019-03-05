@@ -1,0 +1,24 @@
+version: '3'
+
+services:
+    app:
+        image: golang:1.12
+        command: go run main.go -metrics :8081 -delay 0.1
+        environment:
+            GOFLAG: -mod=readonly
+        working_dir: /app
+        volumes:
+            - ./:/app
+
+    prometheus:
+        image: prom/prometheus:v2.7.2
+        volumes:
+            - ./etc/prometheus/:/etc/prometheus/
+
+    grafana:
+        image: grafana/grafana:6.0.0
+        depends_on:
+            - prometheus
+        volumes:
+            - ./etc/grafana/grafana.ini:/etc/grafana/grafana.ini
+            - ./etc/grafana/provisioning:/etc/grafana/provisioning

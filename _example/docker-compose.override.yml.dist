@@ -1,0 +1,21 @@
+version: '3'
+
+services:
+    app:
+        ports:
+            - 8080:8080
+            - 8081:8081
+        volumes:
+            - ./var/docker/volumes/go:/go
+
+    prometheus:
+        ports:
+            - 9090:9090
+        volumes:
+            - ./var/docker/volumes/prometheus:/prometheus
+
+    grafana:
+        ports:
+            - 3000:3000
+        volumes:
+            - ./var/docker/volumes/grafana:/var/lib/grafana
