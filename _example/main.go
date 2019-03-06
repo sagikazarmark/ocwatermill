@@ -6,14 +6,20 @@ import (
 	"flag"
 	"math"
 	"math/rand"
+	"net/http"
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
-	"github.com/ThreeDotsLabs/watermill/components/metrics"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/ThreeDotsLabs/watermill/message/infrastructure/gochannel"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
+	"github.com/go-chi/chi"
+	"go.opencensus.io/exporter/prometheus"
+	"go.opencensus.io/stats/view"
+	"go.opencensus.io/tag"
+
+	"github.com/sagikazarmark/ocwatermill"
 )
 
 var (
@@ -23,6 +29,59 @@ var (
 	logger = watermill.NewStdLogger(true, true)
 	random = rand.New(rand.NewSource(time.Now().Unix()))
 )
+
+var (
+	PublisherPublishTimeView = &view.View{
+		Name:        "publish_time_seconds",
+		Description: "The time that a publishing attempt (success or not) took",
+		Measure:     ocwatermill.PublisherPublishTime,
+		TagKeys:     []tag.Key{ocwatermill.PublisherName, ocwatermill.HandlerName, ocwatermill.Success},
+		Aggregation: ocwatermill.DefaultMillisecondsDistribution,
+	}
+
+	SubscriberReceivedMessageView = &view.View{
+		Name:        "subscriber_messages_received_total",
+		Description: "Number of messages received by the subscriber",
+		Measure:     ocwatermill.SubscriberReceivedMessage,
+		TagKeys:     []tag.Key{ocwatermill.SubscriberName, ocwatermill.HandlerName, ocwatermill.Acked},
+		Aggregation: view.Count(),
+	}
+
+	HandlerExecutionTimeView = &view.View{
+		Name:        "handler_execution_time_seconds",
+		Description: "The total time elapsed while executing the handler function in seconds",
+		Measure:     ocwatermill.HandlerExecutionTime,
+		TagKeys:     []tag.Key{ocwatermill.HandlerName, ocwatermill.Success},
+		Aggregation: ocwatermill.DefaultHandlerExecutionTimeDistribution,
+	}
+)
+
+func createPrometheusExporterHandler(exporter *prometheus.Exporter, addr string) (cancel func()) {
+	router := chi.NewRouter()
+
+	router.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		exporter.ServeHTTP(w, r)
+	})
+	server := http.Server{
+		Addr:    addr,
+		Handler: router,
+	}
+
+	go func() {
+		err := server.ListenAndServe()
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	wait := make(chan struct{})
+	go func() {
+		<-wait
+		server.Close()
+	}()
+
+	return func() { close(wait) }
+}
 
 func delay() {
 	seconds := *handlerDelay
@@ -87,12 +146,26 @@ func main() {
 		panic(err)
 	}
 
-	prometheusRegistry, closeMetricsServer := metrics.CreateRegistryAndServeHTTP(*metricsAddr)
+	err = view.Register(
+		PublisherPublishTimeView,
+		SubscriberReceivedMessageView,
+		HandlerExecutionTimeView,
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	exporter, err := prometheus.NewExporter(prometheus.Options{})
+	if err != nil {
+		panic(err)
+	}
+	view.RegisterExporter(exporter)
+
+	closeMetricsServer := createPrometheusExporterHandler(exporter, *metricsAddr)
 	defer closeMetricsServer()
 
 	// we leave the namespace and subsystem empty
-	metricsBuilder := metrics.NewPrometheusMetricsBuilder(prometheusRegistry, "", "")
-	metricsBuilder.AddPrometheusRouterMetrics(router)
+	ocwatermill.Register(router)
 
 	router.AddMiddleware(
 		middleware.Recoverer,
@@ -118,11 +191,11 @@ func main() {
 	// We are using the same pub/sub to generate messages incoming to the handler
 	// and consume the outgoing messages.
 	// They will have `handler_name=<no handler>` label in Prometheus.
-	subWithMetrics, err := metricsBuilder.DecorateSubscriber(sub)
+	subWithMetrics, err := ocwatermill.DecorateSubscriber(sub)
 	if err != nil {
 		panic(err)
 	}
-	pubWithMetrics, err := metricsBuilder.DecoratePublisher(pub)
+	pubWithMetrics, err := ocwatermill.DecoratePublisher(pub)
 	if err != nil {
 		panic(err)
 	}

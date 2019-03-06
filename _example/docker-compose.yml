@@ -6,9 +6,9 @@ services:
         command: go run main.go -metrics :8081 -delay 0.1
         environment:
             GOFLAG: -mod=readonly
-        working_dir: /app
+        working_dir: /app/_example
         volumes:
-            - ./:/app
+            - ./../:/app
 
     prometheus:
         image: prom/prometheus:v2.7.2
