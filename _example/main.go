@@ -15,9 +15,11 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
 	"github.com/go-chi/chi"
+	"go.opencensus.io/exporter/jaeger"
 	"go.opencensus.io/exporter/prometheus"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
+	"go.opencensus.io/trace"
 
 	"github.com/sagikazarmark/ocwatermill"
 )
@@ -101,6 +103,7 @@ func handler(msg *message.Message) ([]*message.Message, error) {
 
 	for i := 0; i < numOutgoing; i++ {
 		outgoing[i] = msg.Copy()
+		outgoing[i].SetContext(msg.Context())
 	}
 	return outgoing, nil
 }
@@ -155,13 +158,25 @@ func main() {
 		panic(err)
 	}
 
-	exporter, err := prometheus.NewExporter(prometheus.Options{})
+	traceExporter, err := jaeger.NewExporter(jaeger.Options{
+		CollectorEndpoint: "http://jaeger:14268/api/traces?format=jaeger.thrift",
+		Process: jaeger.Process{
+			ServiceName: "ocwatermill-example",
+		},
+	})
 	if err != nil {
 		panic(err)
 	}
-	view.RegisterExporter(exporter)
 
-	closeMetricsServer := createPrometheusExporterHandler(exporter, *metricsAddr)
+	trace.RegisterExporter(traceExporter)
+
+	statsExporter, err := prometheus.NewExporter(prometheus.Options{})
+	if err != nil {
+		panic(err)
+	}
+	view.RegisterExporter(statsExporter)
+
+	closeMetricsServer := createPrometheusExporterHandler(statsExporter, *metricsAddr)
 	defer closeMetricsServer()
 
 	// we leave the namespace and subsystem empty
@@ -171,6 +186,7 @@ func main() {
 		middleware.Recoverer,
 		middleware.RandomFail(0.1),
 		middleware.RandomPanic(0.1),
+		ocwatermill.Middleware,
 	)
 	router.AddPlugin(plugin.SignalsHandler)
 
@@ -195,7 +211,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	pubWithMetrics, err := ocwatermill.DecoratePublisher(pub)
+	pubWithMetrics, err := ocwatermill.PublisherDecorator(ocwatermill.TraceStartOptions(trace.StartOptions{
+		Sampler: trace.AlwaysSample(),
+	}))(pub)
 	if err != nil {
 		panic(err)
 	}

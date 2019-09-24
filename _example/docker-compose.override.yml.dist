@@ -19,3 +19,7 @@ services:
             - 3000:3000
         volumes:
             - ./var/docker/volumes/grafana:/var/lib/grafana
+
+    jaeger:
+        ports:
+            - 16686:16686

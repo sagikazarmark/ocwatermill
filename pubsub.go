@@ -5,7 +5,7 @@ import (
 )
 
 func DecoratePubSub(pubSub message.PubSub) (message.PubSub, error) {
-	pub, err := DecoratePublisher(pubSub)
+	pub, err := PublisherDecorator()(pubSub)
 	if err != nil {
 		return nil, err
 	}

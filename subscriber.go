@@ -1,22 +1,26 @@
 package ocwatermill
 
 import (
+	"fmt"
+
 	"github.com/pkg/errors"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
+	"go.opencensus.io/trace"
+	"go.opencensus.io/trace/propagation"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 
 	"github.com/sagikazarmark/ocwatermill/internal"
 )
 
-type SubscriberDecorator struct {
+type subscriberDecorator struct {
 	message.Subscriber
 	sub            message.Subscriber
 	subscriberName string
 }
 
-func (s *SubscriberDecorator) recordMetrics(msg *message.Message) {
+func (s *subscriberDecorator) recordMetrics(msg *message.Message) {
 	if msg == nil {
 		return
 	}
@@ -32,6 +36,23 @@ func (s *SubscriberDecorator) recordMetrics(msg *message.Message) {
 	if handlerName == "" {
 		handlerName = tagValueNoHandler
 	}
+
+	traceContextBinary := []byte(msg.Metadata["traceContext"])
+	parent, haveParent := propagation.FromBinary(traceContextBinary)
+
+	ctx, span := trace.StartSpanWithRemoteParent(ctx, subscriberName, parent, trace.WithSampler(trace.AlwaysSample()))
+	if !haveParent {
+		fmt.Println("WTF NO PARENT")
+	}
+	// if haveParent {
+	// 	span.AddLink(trace.Link{TraceID: parent.TraceID, SpanID: parent.SpanID, Type: trace.LinkTypeChild})
+	// }
+	msg.SetContext(ctx)
+
+	span.AddAttributes(
+		trace.StringAttribute("watermill.message_uuid", msg.UUID),
+		trace.StringAttribute(HandlerAttribute, handlerName),
+	)
 
 	tags := []tag.Mutator{
 		tag.Upsert(SubscriberName, subscriberName),
@@ -51,19 +72,20 @@ func (s *SubscriberDecorator) recordMetrics(msg *message.Message) {
 			tags = append(tags, tag.Upsert(Acked, "nacked"))
 		}
 
+		span.End()
 		_ = stats.RecordWithTags(ctx, tags, SubscriberReceivedMessage.M(1))
 	}()
 
 	msg.SetContext(setSubscribeObservedToCtx(msg.Context()))
 }
 
-func (s *SubscriberDecorator) Close() error {
+func (s *subscriberDecorator) Close() error {
 	return s.sub.Close()
 }
 
 // DecorateSubscriber decorates a publisher with instrumentation.
 func DecorateSubscriber(sub message.Subscriber) (message.Subscriber, error) {
-	d := &SubscriberDecorator{
+	d := &subscriberDecorator{
 		sub:            sub,
 		subscriberName: internal.StructName(sub),
 	}

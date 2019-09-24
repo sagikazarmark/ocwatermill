@@ -5,7 +5,7 @@ import (
 )
 
 func Register(r *message.Router) {
-	r.AddPublisherDecorators(DecoratePublisher)
+	r.AddPublisherDecorators(PublisherDecorator())
 	r.AddSubscriberDecorators(DecorateSubscriber)
 	r.AddMiddleware(Middleware)
 }

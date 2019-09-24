@@ -22,3 +22,6 @@ services:
         volumes:
             - ./etc/grafana/grafana.ini:/etc/grafana/grafana.ini
             - ./etc/grafana/provisioning:/etc/grafana/provisioning
+
+    jaeger:
+        image: jaegertracing/all-in-one:latest
