@@ -6,17 +6,14 @@ import (
 	"flag"
 	"math"
 	"math/rand"
-	"net/http"
 	"time"
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
-	"github.com/ThreeDotsLabs/watermill/message/infrastructure/gochannel"
 	"github.com/ThreeDotsLabs/watermill/message/router/middleware"
 	"github.com/ThreeDotsLabs/watermill/message/router/plugin"
-	"github.com/go-chi/chi"
-	"go.opencensus.io/exporter/jaeger"
-	"go.opencensus.io/exporter/prometheus"
+	"github.com/ThreeDotsLabs/watermill/pubsub/gochannel"
+	"go.opencensus.io/examples/exporter"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
@@ -25,7 +22,6 @@ import (
 )
 
 var (
-	metricsAddr  = flag.String("metrics", ":8081", "The address that will expose /metrics for Prometheus")
 	handlerDelay = flag.Float64("delay", 0, "The stdev of normal distribution of delay in handler (in seconds), to simulate load")
 
 	logger = watermill.NewStdLogger(true, true)
@@ -57,33 +53,6 @@ var (
 		Aggregation: ocwatermill.DefaultHandlerExecutionTimeDistribution,
 	}
 )
-
-func createPrometheusExporterHandler(exporter *prometheus.Exporter, addr string) (cancel func()) {
-	router := chi.NewRouter()
-
-	router.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		exporter.ServeHTTP(w, r)
-	})
-	server := http.Server{
-		Addr:    addr,
-		Handler: router,
-	}
-
-	go func() {
-		err := server.ListenAndServe()
-		if err != nil {
-			panic(err)
-		}
-	}()
-
-	wait := make(chan struct{})
-	go func() {
-		<-wait
-		server.Close()
-	}()
-
-	return func() { close(wait) }
-}
 
 func delay() {
 	seconds := *handlerDelay
@@ -130,7 +99,7 @@ func produceMessages(routerClosed chan struct{}, publisher message.Publisher) {
 			// go on
 		}
 
-		time.Sleep(50*time.Millisecond + time.Duration(random.Intn(50))*time.Millisecond)
+		time.Sleep(1000*time.Millisecond + time.Duration(random.Intn(1000))*time.Millisecond)
 		msg := message.NewMessage(watermill.NewUUID(), []byte{})
 		_ = publisher.Publish("sub_topic", msg)
 	}
@@ -158,26 +127,9 @@ func main() {
 		panic(err)
 	}
 
-	traceExporter, err := jaeger.NewExporter(jaeger.Options{
-		CollectorEndpoint: "http://jaeger:14268/api/traces?format=jaeger.thrift",
-		Process: jaeger.Process{
-			ServiceName: "ocwatermill-example",
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	trace.RegisterExporter(traceExporter)
-
-	statsExporter, err := prometheus.NewExporter(prometheus.Options{})
-	if err != nil {
-		panic(err)
-	}
-	view.RegisterExporter(statsExporter)
-
-	closeMetricsServer := createPrometheusExporterHandler(statsExporter, *metricsAddr)
-	defer closeMetricsServer()
+	printExporter := &exporter.PrintExporter{}
+	trace.RegisterExporter(printExporter)
+	view.RegisterExporter(printExporter)
 
 	// we leave the namespace and subsystem empty
 	ocwatermill.Register(router)
@@ -186,7 +138,6 @@ func main() {
 		middleware.Recoverer,
 		middleware.RandomFail(0.1),
 		middleware.RandomPanic(0.1),
-		ocwatermill.Middleware,
 	)
 	router.AddPlugin(plugin.SignalsHandler)
 
@@ -200,14 +151,12 @@ func main() {
 	)
 
 	// separate the publisher from pubSub to decorate it separately
-	sub := pubSub.(message.Subscriber)
 	pub := randomFailPublisherDecorator{pubSub, 0.1}
 
-	// The handler's publisher and subscriber will be decorated by `AddPrometheusRouterMetrics`.
 	// We are using the same pub/sub to generate messages incoming to the handler
 	// and consume the outgoing messages.
 	// They will have `handler_name=<no handler>` label in Prometheus.
-	subWithMetrics, err := ocwatermill.DecorateSubscriber(sub)
+	subWithMetrics, err := ocwatermill.DecorateSubscriber(pubSub)
 	if err != nil {
 		panic(err)
 	}
@@ -222,7 +171,7 @@ func main() {
 	go produceMessages(routerClosed, pubWithMetrics)
 	go consumeMessages(subWithMetrics)
 
-	_ = router.Run()
+	_ = router.Run(context.Background())
 	close(routerClosed)
 }
 
